@@ -1,0 +1,25 @@
+{
+    "family": "demo-ecs-service-task-definition",
+    "networkMode": "awsvpc",
+    "executionRoleArn": "arn:aws:iam::381492102179:role/ecsTaskExecutionRole",
+    "taskRoleArn": "arn:aws:iam::381492102179:role/ecsTaskExecutionRole",
+    "cpu": "512",
+    "memory": "1024",
+    "requiresCompatibilities": [
+        "FARGATE"
+    ],
+    "containerDefinitions": [
+        {
+            "name": "demo-ecs-service-container",
+            "image": "381492102179.dkr.ecr.us-east-1.amazonaws.com/demo-ecs-service-image:latest",
+            "portMappings": [
+                {
+                    "containerPort": 8080,
+                    "hostPort": 8080,
+                    "protocol": "tcp"
+                }
+            ],
+            "essential": true
+        }
+    ]
+}

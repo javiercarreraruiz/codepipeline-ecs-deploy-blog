@@ -1,0 +1,766 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ECS Deployment Pipeline with GitHub Source using CodeStar Connections and ALB
+
+Parameters:
+  GitHubConnectionArn:
+    Type: String
+    Description: The ARN of the CodeStar Connections connection to GitHub
+  GitHubOwner:
+    Type: String
+    Description: The GitHub user or organization that owns the repository
+    Default: javiercarreraruiz
+  GitHubRepoName:
+    Type: String
+    Description: The name of the GitHub repository
+    Default: demo-ecs-service-deployment
+  GitHubBranch:
+    Type: String
+    Default: main
+    Description: The branch of the GitHub repository
+  ECRRepositoryName:
+    Type: String
+    Default: demo-ecs-service-image
+    Description: Amazon ECR repository name
+  ClusterName:
+    Type: String
+    Default: demo-ecs-cluster
+    Description: The name of the ECS cluster
+  ServiceName:
+    Type: String
+    Default: demo-ecs-service
+    Description: The name of the ECS service
+  TaskDefinitionFamily:
+    Type: String
+    Default: demo-ecs-service-task-definition
+    Description: The family name of the task definition
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID for ECS tasks and ALB
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Subnet IDs for ECS tasks
+
+Resources:
+  # ECR Repository
+  ECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref ECRRepositoryName
+
+  # ECS Cluster
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    DependsOn:
+      - ECRRepository
+    Properties:
+      ClusterName: !Ref ClusterName
+
+  # ECS Task Execution Role
+  ECSExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ecsTaskExecutionRoleDemo
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: CloudWatchLogsPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "arn:aws:logs:*:*:*"
+
+  # ALB Security Group
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP traffic to the ALB
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  # ECS Task Security Group
+  ECSTaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow traffic from ALB to ECS tasks
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+
+  # Application Load Balancer
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${AWS::StackName}-ALB"
+      Subnets: !Ref SubnetIds
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Scheme: internet-facing
+      Type: application
+
+  # ALB Target Group
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${AWS::StackName}-TG"
+      VpcId: !Ref VpcId
+      Port: 8080
+      Protocol: HTTP
+      TargetType: ip
+      HealthCheckProtocol: HTTP
+      HealthCheckPort: "8080"
+      HealthCheckPath: "/"
+      HealthCheckIntervalSeconds: 5
+      HealthCheckTimeoutSeconds: 2
+      HealthyThresholdCount: 3
+      UnhealthyThresholdCount: 10
+      Matcher:
+        HttpCode: "200"
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: "0"
+
+  # ALB Listener
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroup
+
+  # ECS Task Definition
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Ref TaskDefinitionFamily
+      NetworkMode: awsvpc
+      Cpu: '256'
+      Memory: '512'
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt ECSExecutionRole.Arn
+      TaskRoleArn: !GetAtt ECSExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: demo-ecs-service-container
+          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ECRRepositoryName}:latest"
+          PortMappings:
+            - ContainerPort: 8080
+              Protocol: tcp
+          Essential: true
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Sub "/ecs/${ServiceName}"
+              awslogs-region: !Sub "${AWS::Region}"
+              awslogs-stream-prefix: ecs
+
+  ECSServiceLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${ServiceName}"
+      RetentionInDays: 14
+
+  # ECS Service
+  ECSService:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - ALBListener
+    Properties:
+      Cluster: !Ref ECSCluster
+      ServiceName: !Ref ServiceName
+      TaskDefinition: !Ref TaskDefinition
+      LaunchType: FARGATE
+      DesiredCount: 1
+      HealthCheckGracePeriodSeconds: 0
+      DeploymentConfiguration:
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets: !Ref SubnetIds
+          SecurityGroups:
+            - !Ref ECSTaskSecurityGroup
+      LoadBalancers:
+        - TargetGroupArn: !Ref ALBTargetGroup
+          ContainerName: demo-ecs-service-container
+          ContainerPort: 8080
+
+  # S3 Buckets for Artifacts (Dynamically Generated Names)
+  ArtifactBucketOnlyCodeChanges:
+    Type: AWS::S3::Bucket
+
+  ArtifactBucketOnlyTaskDefChanges:
+    Type: AWS::S3::Bucket
+
+  # IAM Roles for CodePipeline
+  CodePipelineRoleOnlyCodeChanges:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodePipelinePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:*
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+                Resource: !Ref GitHubConnectionArn
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ecs:RegisterTaskDefinition
+                  - ecs:DescribeServices
+                  - ecs:UpdateService
+                  - ecs:DescribeTaskDefinition
+                  - elasticloadbalancing:DescribeTargetGroups
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource: '*'
+
+  CodePipelineRoleOnlyTaskDefChanges:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodePipelinePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:*
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+                Resource: !Ref GitHubConnectionArn
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ecs:RegisterTaskDefinition
+                  - ecs:DescribeServices
+                  - ecs:UpdateService
+                  - ecs:DescribeTaskDefinition
+                  - elasticloadbalancing:DescribeTargetGroups
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:updateECSservice"
+
+  # IAM Role for CodeBuild
+  CodeBuildServiceRoleOnlyCodeChanges:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodeBuildPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:BatchGetImage
+                  - ecr:PutImage
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: !GetAtt ECSExecutionRole.Arn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:GetObjectVersion
+                  - s3:GetBucketVersioning
+                  - s3:GetBucketAcl
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+                Resource: '*'
+
+  # CodeBuild Project
+  CodeBuildProjectOnlyCodeChanges:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${AWS::StackName}-BuildProject-OnlyCodeChanges"
+      Description: Build project for ECS application
+      ServiceRole: !GetAtt CodeBuildServiceRoleOnlyCodeChanges.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:5.0
+        Type: LINUX_CONTAINER
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: AWS_ACCOUNT_ID
+            Value: !Sub "${AWS::AccountId}"
+          - Name: AWS_DEFAULT_REGION
+            Value: !Sub "${AWS::Region}"
+      Source:
+        Type: CODEPIPELINE
+      Cache:
+        Type: NO_CACHE
+
+  # IAM Role for CodeBuild
+  CodeBuildServiceRoleOnlyTaskDefChanges:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodeBuildPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecs:RegisterTaskDefinition
+                Resource: !Sub "arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/${TaskDefinitionFamily}:*"
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:GetObjectVersion
+                  - s3:GetBucketVersioning
+                  - s3:GetBucketAcl
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+                Resource: '*'
+
+  # CodeBuild Project
+  CodeBuildProjectOnlyTaskDefChanges:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${AWS::StackName}-BuildProject-OnlyTaskDefChanges"
+      Description: Build project for ECS application
+      ServiceRole: !GetAtt CodeBuildServiceRoleOnlyTaskDefChanges.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:5.0
+        Type: LINUX_CONTAINER
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: AWS_ACCOUNT_ID
+            Value: !Sub "${AWS::AccountId}"
+          - Name: AWS_DEFAULT_REGION
+            Value: !Sub "${AWS::Region}"
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: "buildspec-taskdef.yml"
+      Cache:
+        Type: NO_CACHE
+
+  # Lambda Function
+  UpdateECSServiceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: updateECSservice
+      Description: Lambda function to update ECS service with the latest task definition.
+      Handler: index.lambda_handler
+      Runtime: python3.12
+      MemorySize: 128
+      Timeout: 3
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+          import json
+          import logging
+
+          # Set up logging
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          # Initialize AWS clients outside the handler for re-use across Lambda invocations
+          ecs_client = boto3.client('ecs')
+          codepipeline_client = boto3.client('codepipeline')
+
+          def lambda_handler(event, context):
+              logger.info('Lambda function has started execution.')
+
+              # Retrieve environment variables
+              cluster_name = os.environ.get('CLUSTER_NAME')
+              service_name = os.environ.get('SERVICE_NAME')
+              family_prefix_name = os.environ.get('FAMILY_PREFIX_NAME')
+
+              logger.info(f'Cluster Name: {cluster_name}')
+              logger.info(f'Service Name: {service_name}')
+              logger.info(f'Family Prefix Name: {family_prefix_name}')
+
+              # Extract Job ID from the event
+              try:
+                  job_id = event['CodePipeline.job']['id']
+                  logger.info(f'CodePipeline Job ID: {job_id}')
+              except KeyError as e:
+                  logger.error('Job ID not found in the event.', exc_info=True)
+                  raise Exception('Job ID not found in the event.') from e
+
+              try:
+                  # List active task definitions sorted by revision in descending order
+                  logger.info('Listing task definitions...')
+                  response = ecs_client.list_task_definitions(
+                      familyPrefix=family_prefix_name,
+                      status='ACTIVE',
+                      sort='DESC'
+                  )
+                  task_definitions = response.get('taskDefinitionArns', [])
+
+                  if not task_definitions:
+                      message = 'No active task definitions found.'
+                      logger.error(message)
+                      raise Exception(message)
+
+                  # Get the latest task definition ARN
+                  latest_task_definition = task_definitions[0]
+                  logger.info(f'Latest Task Definition ARN: {latest_task_definition}')
+
+                  # Update ECS service to use the latest task definition
+                  logger.info('Updating ECS service to use the latest task definition...')
+                  update_response = ecs_client.update_service(
+                      cluster=cluster_name,
+                      service=service_name,
+                      taskDefinition=latest_task_definition,
+                      forceNewDeployment=True
+                  )
+                  logger.info('ECS service updated successfully.')
+
+                  # Serialize the response to make it JSON serializable
+                  update_response_serialized = json.loads(json.dumps(update_response, default=str))
+                  logger.debug(f'Update Response: {update_response_serialized}')
+
+                  # Notify CodePipeline of a successful execution
+                  logger.info('Notifying CodePipeline of a successful execution...')
+                  codepipeline_client.put_job_success_result(jobId=job_id)
+                  logger.info('CodePipeline notified successfully.')
+
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps(update_response_serialized)
+                  }
+              except Exception as e:
+                  logger.error('An error occurred during the Lambda execution.', exc_info=True)
+
+                  # Notify CodePipeline of a failed execution
+                  logger.info('Notifying CodePipeline of a failed execution...')
+                  codepipeline_client.put_job_failure_result(
+                      jobId=job_id,
+                      failureDetails={
+                          'message': f'Lambda function failed: {str(e)}',
+                          'type': 'JobFailed',
+                          'externalExecutionId': context.aws_request_id
+                      }
+                  )
+                  logger.info('CodePipeline notified of failure.')
+
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps({'error': str(e)})
+                  }
+
+      Environment:
+        Variables:
+          CLUSTER_NAME: !Ref ClusterName
+          FAMILY_PREFIX_NAME: !Ref TaskDefinitionFamily
+          SERVICE_NAME: !Ref ServiceName
+      Architectures:
+        - x86_64
+      EphemeralStorage:
+        Size: 512
+      Role: !GetAtt LambdaExecutionRole.Arn
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: demo-LambdaExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ECSManagementPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecs:ListTaskDefinitions
+                  - ecs:DescribeTaskDefinition
+                  - ecs:UpdateService
+                  - ecs:DescribeServices
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: '*'
+        - PolicyName: CodePipelineNotificationPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - codepipeline:PutJobSuccessResult
+                  - codepipeline:PutJobFailureResult
+                Resource: '*'
+        - PolicyName: LambdaLoggingPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+
+  UpdateECSServiceFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${UpdateECSServiceFunction}"
+      RetentionInDays: 14
+
+  # CodePipeline for Only Code Changes
+  CodePipelineOnlyCodeChanges:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub "${AWS::StackName}-Pipeline-MonitorOnlyCodeChanges"
+      RoleArn: !GetAtt CodePipelineRoleOnlyCodeChanges.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucketOnlyCodeChanges
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: '1'
+              OutputArtifacts:
+                - Name: SourceOutput
+              Configuration:
+                ConnectionArn: !Ref GitHubConnectionArn
+                FullRepositoryId: !Sub "${GitHubOwner}/${GitHubRepoName}"
+                BranchName: !Ref GitHubBranch
+                DetectChanges: true
+              RunOrder: 1
+        - Name: Build
+          Actions:
+            - Name: BuildAction
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: BuildOutput
+              Configuration:
+                ProjectName: !Ref CodeBuildProjectOnlyCodeChanges
+              RunOrder: 1
+        - Name: Deploy
+          Actions:
+            - Name: DeployAction
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: ECS
+                Version: '1'
+              InputArtifacts:
+                - Name: BuildOutput
+              Configuration:
+                ClusterName: !Ref ECSCluster
+                ServiceName: !Ref ECSService
+                FileName: imagedefinitions.json
+              RunOrder: 1
+      Triggers:
+        - ProviderType: CodeStarSourceConnection
+          GitConfiguration:
+            Push:
+              - FilePaths:
+                  Includes:
+                    - "app/**"
+                    - "buildspec.yml"
+                    - "Dockerfile"
+            SourceActionName: SourceAction
+      PipelineType: V2
+
+  # CodePipeline for Only Task Definition Changes
+  CodePipelineOnlyTaskDefChanges:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub "${AWS::StackName}-Pipeline-MonitorOnlyTaskDefChanges"
+      RoleArn: !GetAtt CodePipelineRoleOnlyTaskDefChanges.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucketOnlyTaskDefChanges
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: '1'
+              OutputArtifacts:
+                - Name: SourceOutput
+              Configuration:
+                ConnectionArn: !Ref GitHubConnectionArn
+                FullRepositoryId: !Sub "${GitHubOwner}/${GitHubRepoName}"
+                BranchName: !Ref GitHubBranch
+                DetectChanges: true
+              RunOrder: 1
+        - Name: Build
+          Actions:
+            - Name: BuildAction
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: BuildOutput
+              Configuration:
+                ProjectName: !Ref CodeBuildProjectOnlyTaskDefChanges
+              RunOrder: 1
+        - Name: Deploy
+          Actions:
+            - Name: ForceTaskDefinitionUpdate
+              ActionTypeId:
+                Category: Invoke
+                Owner: AWS
+                Provider: Lambda
+                Version: '1'
+              Configuration:
+                FunctionName: updateECSservice
+              RunOrder: 1
+      Triggers:
+        - ProviderType: CodeStarSourceConnection
+          GitConfiguration:
+            Push:
+              - FilePaths:
+                  Includes:
+                    - "task-definition.json"
+                    - "buildspec-taskdef.yml"
+            SourceActionName: SourceAction
+      PipelineType: V2
+
+Outputs:
+  PipelineURLOnlyCodeChanges:
+    Description: CodePipeline URL OnlyCodeChanges
+    Value: !Sub "https://console.aws.amazon.com/codesuite/codepipeline/pipelines/${CodePipelineOnlyCodeChanges}/view"
+
+  PipelineURLOnlyTaskDefChanges:
+    Description: CodePipeline URL OnlyTaskDefChanges
+    Value: !Sub "https://console.aws.amazon.com/codesuite/codepipeline/pipelines/${CodePipelineOnlyTaskDefChanges}/view"
+
+  LoadBalancerDNSName:
+    Description: The DNS name of the Application Load Balancer
+    Value: !GetAtt ApplicationLoadBalancer.DNSName

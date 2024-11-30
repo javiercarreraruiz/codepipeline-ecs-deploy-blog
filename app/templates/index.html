@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>ECS Task Information</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 40px;
+            background-color: #f8f9fa;
+        }
+        h1 {
+            color: #2E86C1;
+        }
+        h2 {
+            color: #333;
+        }
+        .section {
+            margin-bottom: 30px;
+        }
+        .container {
+            border: 1px solid #ddd;
+            padding: 20px;
+            margin-bottom: 20px;
+            background-color: #fff;
+            border-radius: 5px;
+        }
+        .container h3 {
+            margin-top: 0;
+            color: #2E86C1;
+        }
+        .info {
+            font-size: 1.1em;
+            line-height: 1.5;
+        }
+        .info span {
+            font-weight: bold;
+            color: #555;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 40px;
+            color: #aaa;
+        }
+    </style>
+</head>
+<body>
+    <h1>{{ message }}</h1>
+
+    <div class="section">
+        <h2>Task Information</h2>
+        <p class="info"><span>Task ID:</span> {{ task_id }}</p>
+        <p class="info"><span>Family:</span> {{ family }}</p>
+        <p class="info"><span>Revision:</span> {{ revision }}</p>
+        <p class="info"><span>Cluster Name:</span> {{ cluster_name }}</p>
+        <p class="info"><span>CPU:</span> {{ cpu }}</p>
+        <p class="info"><span>Memory:</span> {{ memory }}</p>
+    </div>
+
+    <div class="section">
+        <h2>Containers</h2>
+        {% for container in containers %}
+        <div class="container">
+            <h3>{{ container.container_name }}</h3>
+            <p class="info"><span>Image:</span> {{ container.image }}</p>
+            <p class="info"><span>Private IP:</span> {{ container.private_ip }}</p>
+            <p class="info"><span>Public IP:</span> {{ container.public_ip }}</p>
+        </div>
+        {% endfor %}
+    </div>
+
+    <div class="footer">
+        Powered by AWS ECS Fargate and Python.
+    </div>
+</body>
+</html>

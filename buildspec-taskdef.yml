@@ -1,0 +1,15 @@
+version: 0.2
+
+phases:
+  pre_build:
+    commands:
+      - echo Entering Pre Build phase...
+      - echo Registering Task Definition...
+      - aws ecs register-task-definition --cli-input-json file://task-definition.json
+  build:
+    commands:
+      - echo Skipping Build phase...
+  post_build:
+    commands:
+      - echo Skipping Post Build phase...
+
