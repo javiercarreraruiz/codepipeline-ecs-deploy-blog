@@ -8,7 +8,6 @@ Parameters:
   GitHubOwner:
     Type: String
     Description: The GitHub user or organization that owns the repository
-    Default: javiercarreraruiz
   GitHubRepoName:
     Type: String
     Description: The name of the GitHub repository
