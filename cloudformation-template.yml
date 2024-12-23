@@ -40,17 +40,9 @@ Parameters:
     Description: Subnet IDs for ECS tasks
 
 Resources:
-  # ECR Repository
-  ECRRepository:
-    Type: AWS::ECR::Repository
-    Properties:
-      RepositoryName: !Ref ECRRepositoryName
-
   # ECS Cluster
   ECSCluster:
     Type: AWS::ECS::Cluster
-    DependsOn:
-      - ECRRepository
     Properties:
       ClusterName: !Ref ClusterName
 
@@ -238,6 +230,7 @@ Resources:
                 Resource: '*'
               - Effect: Allow
                 Action:
+                  - codeconnections:UseConnection
                   - codestar-connections:UseConnection
                 Resource: !Ref GitHubConnectionArn
               - Effect: Allow
@@ -279,6 +272,7 @@ Resources:
                 Resource: '*'
               - Effect: Allow
                 Action:
+                  - codeconnections:UseConnection
                   - codestar-connections:UseConnection
                 Resource: !Ref GitHubConnectionArn
               - Effect: Allow
