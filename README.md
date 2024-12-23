@@ -1,4 +1,4 @@
-To implement this solution in your environment, [import](https://github.com/new/import) the [repository](https://github.com/javiercarreraruiz/codepipeline-ecs-deploy-blog) and clone your imported repository to your local device:
+Copy the repository into a new one you will own using the following link:  [Copy to a new repository from the repository template](https://github.com/new?template_name=codepipeline-ecs-deploy-blog&template_owner=javiercarreraruiz)
 
 
 ****Create a Connection to GitHub****: Since the pipelines rely on your GitHub repository as the source, you'll need to set up an AWS CodeConnections connection to GitHub.
