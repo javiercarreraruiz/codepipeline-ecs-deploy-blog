@@ -1,10 +1,10 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: ECS Deployment Pipeline with GitHub Source using CodeStar Connections and ALB
+Description: ECS Deployment Pipeline with GitHub Source using AWS CodeConnections and ALB
 
 Parameters:
   GitHubConnectionArn:
     Type: String
-    Description: The ARN of the CodeStar Connections connection to GitHub
+    Description: The ARN of the AWS CodeConnections connection to GitHub
   GitHubOwner:
     Type: String
     Description: The GitHub user or organization that owns the repository
